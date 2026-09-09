@@ -46,6 +46,7 @@ class SettingsModel(
     configSaved = Signal()
     # MCP 工具禁用列表相对打开/上次保存是否变化 → 保存后可能触发重连
     mcpToolsNeedReconnect = Signal()
+    qqMusicLoginChanged = Signal()
 
     def __init__(self, parent=None, event_bus=None, task_manager=None):
         super().__init__(parent)
@@ -73,6 +74,8 @@ class SettingsModel(
         self._wake_word_preview: str = ""
         # 打开设置时快照，保存时对比是否变更 MCP 工具暴露
         self._mcp_disabled_snapshot: list[str] = []
+        self._qq_music_login_busy = False
+        self._qq_music_qr_source = ""
 
         # 启动仅读配置；音频/摄像头/唤醒词预览延后到打开设置时再处理
         self._load_config()
@@ -226,24 +229,36 @@ class SettingsModel(
     windowSizeMode = Property(
         str, SettingsSystemOptionsMixin._get_windowSizeMode, SettingsSystemOptionsMixin._set_windowSizeMode, notify=settingsChanged
     )
-    musicSearchUrl = Property(
-        str, SettingsSystemOptionsMixin._get_musicSearchUrl, SettingsSystemOptionsMixin._set_musicSearchUrl, notify=settingsChanged
-    )
-    musicUrlApi = Property(
-        str, SettingsSystemOptionsMixin._get_musicUrlApi, SettingsSystemOptionsMixin._set_musicUrlApi, notify=settingsChanged
-    )
-    musicUrlApiKey = Property(
-        str, SettingsSystemOptionsMixin._get_musicUrlApiKey, SettingsSystemOptionsMixin._set_musicUrlApiKey, notify=settingsChanged
-    )
-    musicDefaultPlatform = Property(
+    musicDefaultQuality = Property(
         str,
-        SettingsSystemOptionsMixin._get_musicDefaultPlatform,
-        SettingsSystemOptionsMixin._set_musicDefaultPlatform,
+        SettingsSystemOptionsMixin._get_musicDefaultQuality,
+        SettingsSystemOptionsMixin._set_musicDefaultQuality,
         notify=settingsChanged,
     )
-    musicDefaultQuality = Property(
-        str, SettingsSystemOptionsMixin._get_musicDefaultQuality, SettingsSystemOptionsMixin._set_musicDefaultQuality, notify=settingsChanged
+    qqMusicLoginStatus = Property(
+        str,
+        SettingsSystemOptionsMixin._get_qqMusicLoginStatus,
+        notify=qqMusicLoginChanged,
     )
+    qqMusicLoginBusy = Property(
+        bool,
+        SettingsSystemOptionsMixin._get_qqMusicLoginBusy,
+        notify=qqMusicLoginChanged,
+    )
+    qqMusicQrSource = Property(
+        str,
+        SettingsSystemOptionsMixin._get_qqMusicQrSource,
+        notify=qqMusicLoginChanged,
+    )
+
+    @Slot(str)
+    def startQqMusicLogin(self, login_type: str = "qq") -> None:
+        self._start_qq_music_login(login_type)
+
+    @Slot()
+    def logoutQqMusic(self) -> None:
+        self._logout_qq_music()
+
     mqttEndpoint = Property(
         str, SettingsSystemOptionsMixin._get_mqttEndpoint, SettingsSystemOptionsMixin._set_mqttEndpoint, notify=settingsChanged
     )

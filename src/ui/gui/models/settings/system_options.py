@@ -1,6 +1,10 @@
 """系统选项：设备 ID、网络、MQTT、音乐、AEC."""
 
 
+from src.logging import get_logger
+
+logger = get_logger()
+
 class SettingsSystemOptionsMixin:
     # ========== 系统选项 ==========
 
@@ -60,36 +64,123 @@ class SettingsSystemOptionsMixin:
     def _set_windowSizeMode(self, value: str):
         self._set_value("SYSTEM_OPTIONS.WINDOW_SIZE_MODE", value)
 
-    # 音乐配置
-    def _get_musicSearchUrl(self) -> str:
-        return self._get_value("MUSIC.SEARCH_URL", "")
-
-    def _set_musicSearchUrl(self, value: str):
-        self._set_value("MUSIC.SEARCH_URL", value)
-
-    def _get_musicUrlApi(self) -> str:
-        return self._get_value("MUSIC.URL_API", "")
-
-    def _set_musicUrlApi(self, value: str):
-        self._set_value("MUSIC.URL_API", value)
-
-    def _get_musicUrlApiKey(self) -> str:
-        return self._get_value("MUSIC.URL_API_KEY", "")
-
-    def _set_musicUrlApiKey(self, value: str):
-        self._set_value("MUSIC.URL_API_KEY", value)
-
-    def _get_musicDefaultPlatform(self) -> str:
-        return self._get_value("MUSIC.DEFAULT_PLATFORM", "kw")
-
-    def _set_musicDefaultPlatform(self, value: str):
-        self._set_value("MUSIC.DEFAULT_PLATFORM", value)
-
+    # QQ 音乐配置与扫码登录状态
     def _get_musicDefaultQuality(self) -> str:
         return self._get_value("MUSIC.DEFAULT_QUALITY", "320k")
 
     def _set_musicDefaultQuality(self, value: str):
         self._set_value("MUSIC.DEFAULT_QUALITY", value)
+
+    def _get_qqMusicLoginStatus(self) -> str:
+        credential = self._get_value("MUSIC.QQ_CREDENTIAL", {}) or {}
+        music_id = credential.get("musicid") if isinstance(credential, dict) else None
+        return f"已登录（MusicID: {music_id}）" if music_id else "未登录"
+
+    def _get_qqMusicLoginBusy(self) -> bool:
+        return bool(getattr(self, "_qq_music_login_busy", False))
+
+    def _get_qqMusicQrSource(self) -> str:
+        return getattr(self, "_qq_music_qr_source", "")
+
+    def _set_qq_music_login_state(
+        self, *, busy: bool | None = None, qr_source: str | None = None
+    ) -> None:
+        if busy is not None:
+            self._qq_music_login_busy = busy
+        if qr_source is not None:
+            self._qq_music_qr_source = qr_source
+        self.qqMusicLoginChanged.emit()
+
+    def _start_qq_music_login(self, login_type: str) -> None:
+        if self._get_qqMusicLoginBusy():
+            self.statusMessage.emit("QQ 音乐登录正在进行中")
+            return
+
+        task_manager = getattr(self, "_task_manager", None)
+        if task_manager is None:
+            self.statusMessage.emit("当前运行模式不支持扫码登录")
+            return
+
+        async def _login():
+            import base64
+
+            from qqmusic_api import Client
+            from qqmusic_api.models.login import QRCodeLoginEvents, QRLoginType
+            from qqmusic_api.modules.login_utils import QRCodeLoginSession
+
+            qr_type = QRLoginType(login_type)
+            async with Client() as client:
+                session = QRCodeLoginSession(
+                    client.login, qr_type, interval=1.5, timeout_seconds=180
+                )
+                qr = await session.get_qrcode()
+                source = (
+                    f"data:{qr.mimetype or 'image/png'};base64,"
+                    f"{base64.b64encode(qr.data).decode('ascii')}"
+                )
+                self._schedule_ui(
+                    lambda: self._set_qq_music_login_state(qr_source=source)
+                )
+                self._schedule_ui(
+                    lambda: self.statusMessage.emit("请扫码并在手机上确认登录")
+                )
+
+                async for result in session.iter_events():
+                    if result.event == QRCodeLoginEvents.CONF:
+                        self._schedule_ui(
+                            lambda: self.statusMessage.emit("已扫码，等待手机确认")
+                        )
+                    elif result.event == QRCodeLoginEvents.DONE:
+                        if result.credential is None:
+                            raise RuntimeError("登录结果缺少凭据")
+                        credential = result.credential.model_dump(mode="json")
+                        self._schedule_ui(
+                            lambda c=credential: self._finish_qq_music_login(c)
+                        )
+                        return
+                    elif result.event == QRCodeLoginEvents.REFUSE:
+                        raise RuntimeError("已拒绝 QQ 音乐登录")
+                    elif result.event == QRCodeLoginEvents.TIMEOUT:
+                        raise RuntimeError("登录二维码已过期")
+
+        def _done(task):
+            def _apply():
+                if task.cancelled():
+                    self._set_qq_music_login_state(busy=False, qr_source="")
+                    return
+                error = task.exception()
+                if error is not None:
+                    logger.error("QQ 音乐扫码登录失败: %s", error, exc_info=error)
+                    self.statusMessage.emit(f"QQ 音乐登录失败: {error}")
+                    self._set_qq_music_login_state(busy=False, qr_source="")
+
+            self._schedule_ui(_apply)
+
+        self._set_qq_music_login_state(busy=True, qr_source="")
+        self.statusMessage.emit("正在获取 QQ 音乐登录二维码…")
+        task = task_manager.spawn(_login(), name="ui:qq_music_login")
+        if task is None:
+            self._set_qq_music_login_state(busy=False)
+            self.statusMessage.emit("应用正在关闭，无法登录")
+            return
+        task.add_done_callback(_done)
+
+    def _finish_qq_music_login(self, credential: dict) -> None:
+        if not self._config_manager.update_config("MUSIC.QQ_CREDENTIAL", credential):
+            self.statusMessage.emit("QQ 音乐登录成功，但凭据保存失败")
+            self._set_qq_music_login_state(busy=False, qr_source="")
+            return
+        self._set_value("MUSIC.QQ_CREDENTIAL", credential)
+        self.statusMessage.emit("QQ 音乐登录成功")
+        self._set_qq_music_login_state(busy=False, qr_source="")
+
+    def _logout_qq_music(self) -> None:
+        if self._config_manager.update_config("MUSIC.QQ_CREDENTIAL", {}):
+            self._set_value("MUSIC.QQ_CREDENTIAL", {})
+            self.statusMessage.emit("已退出 QQ 音乐登录")
+        else:
+            self.statusMessage.emit("退出登录失败：无法保存配置")
+        self._set_qq_music_login_state(busy=False, qr_source="")
 
     # MQTT 配置
     def _get_mqttEndpoint(self) -> str:

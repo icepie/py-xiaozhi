@@ -591,7 +591,7 @@ def test_config_manager_corrupt_file_backed_up(tmp_path, monkeypatch):
     )
     cm = ConfigManager()
     assert cm.get_config("WAKE_WORD_OPTIONS.USE_WAKE_WORD") is True
-    assert cm.get_config("MUSIC.DEFAULT_PLATFORM") == "kw"
+    assert cm.get_config("MUSIC.DEFAULT_PLATFORM") == "tx"
     assert ConfigManager.DEFAULT_CONFIG["WAKE_WORD_OPTIONS"]["WAKE_WORD"] == before_wake
 
     backups = list(cfg_dir.glob("config.json.corrupt-*"))
@@ -611,7 +611,8 @@ def test_config_manager_default_includes_music_and_window_mode():
 
     d = ConfigManager.DEFAULT_CONFIG
     assert "MUSIC" in d
-    assert d["MUSIC"]["DEFAULT_PLATFORM"] == "kw"
+    assert d["MUSIC"]["DEFAULT_PLATFORM"] == "tx"
+    assert d["MUSIC"]["DEFAULT_QUALITY"] == "320k"
     assert d["SYSTEM_OPTIONS"]["WINDOW_SIZE_MODE"] == "default"
 
 
@@ -773,7 +774,7 @@ def test_music_player_init_is_lazy():
         assert p._cache._temp_cleaned is False
         cfg = p.config
         assert isinstance(cfg, dict)
-        assert "SEARCH_URL" in cfg
+        assert cfg["DEFAULT_SOURCE"] == "tx"
     finally:
         reset_config()
 

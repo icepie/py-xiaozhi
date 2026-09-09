@@ -1,4 +1,4 @@
-// 音乐设置页
+// QQ 音乐设置页
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -14,101 +14,94 @@ ScrollView {
         spacing: Theme.spacingLg
 
         Text {
-            text: "音乐配置"
+            text: "QQ 音乐"
             font.pixelSize: Theme.fontSizeXl
             font.weight: Font.DemiBold
             color: Theme.textPrimary
         }
 
-        // API 配置
         ColumnLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
 
             Text {
-                text: "API 设置"
+                text: "账号"
                 font.pixelSize: Theme.fontSizeMd
                 font.weight: Font.Medium
                 color: Theme.textSecondary
             }
 
-            GridLayout {
+            RowLayout {
                 Layout.fillWidth: true
-                columns: 2
-                rowSpacing: Theme.spacingMd
-                columnSpacing: Theme.spacingLg
+                spacing: Theme.spacingMd
 
                 Text {
-                    text: "搜索 API"
-                    font.pixelSize: Theme.fontSizeSm
-                    color: Theme.textSecondary
-                    Layout.preferredWidth: 120
-                }
-                TextField {
-                    id: musicSearchUrlField
                     Layout.fillWidth: true
-                    text: settingsModel ? settingsModel.musicSearchUrl : ""
-                    // 边改边写回；只靠 editingFinished 时点保存常写不上空串
-                    onTextEdited: if (settingsModel) settingsModel.musicSearchUrl = text
-                    onEditingFinished: if (settingsModel) settingsModel.musicSearchUrl = text
-                    placeholderText: "留空使用默认酷我搜索 API"
+                    text: settingsModel ? settingsModel.qqMusicLoginStatus : "未登录"
                     font.pixelSize: Theme.fontSizeSm
-                    background: Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.backgroundSecondary
-                        border.color: musicSearchUrlField.activeFocus ? Theme.primary : "transparent"
+                    color: text.startsWith("已登录") ? Theme.success : Theme.textSecondary
+                }
+
+                XComboBox {
+                    id: loginTypeCombo
+                    Layout.preferredWidth: 130
+                    model: ["手机 QQ", "微信", "QQ 音乐 App"]
+                    enabled: settingsModel && !settingsModel.qqMusicLoginBusy
+                    font.pixelSize: Theme.fontSizeSm
+                }
+
+                XButton {
+                    text: settingsModel && settingsModel.qqMusicLoginBusy ? "登录中…" : "扫码登录"
+                    enabled: settingsModel && !settingsModel.qqMusicLoginBusy
+                    onClicked: {
+                        var types = ["qq", "wx", "mobile"]
+                        settingsModel.startQqMusicLogin(types[loginTypeCombo.currentIndex])
                     }
                 }
 
-                Text {
-                    text: "直链 API"
-                    font.pixelSize: Theme.fontSizeSm
-                    color: Theme.textSecondary
-                    Layout.preferredWidth: 120
+                XButton {
+                    text: "退出"
+                    variant: "secondary"
+                    enabled: settingsModel && settingsModel.qqMusicLoginStatus.startsWith("已登录")
+                    onClicked: settingsModel.logoutQqMusic()
                 }
-                TextField {
-                    id: musicUrlApiField
-                    Layout.fillWidth: true
-                    text: settingsModel ? settingsModel.musicUrlApi : ""
-                    onTextEdited: if (settingsModel) settingsModel.musicUrlApi = text
-                    onEditingFinished: if (settingsModel) settingsModel.musicUrlApi = text
-                    placeholderText: "留空使用默认 lx-music-api"
-                    font.pixelSize: Theme.fontSizeSm
-                    background: Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.backgroundSecondary
-                        border.color: musicUrlApiField.activeFocus ? Theme.primary : "transparent"
-                    }
-                }
+            }
 
-                Text {
-                    text: "API Key"
-                    font.pixelSize: Theme.fontSizeSm
-                    color: Theme.textSecondary
-                    Layout.preferredWidth: 120
-                }
-                TextField {
-                    id: musicUrlApiKeyField
-                    Layout.fillWidth: true
-                    text: settingsModel ? settingsModel.musicUrlApiKey : ""
-                    onTextEdited: if (settingsModel) settingsModel.musicUrlApiKey = text
-                    onEditingFinished: if (settingsModel) settingsModel.musicUrlApiKey = text
-                    placeholderText: "留空使用默认 Key"
-                    font.pixelSize: Theme.fontSizeSm
-                    background: Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.backgroundSecondary
-                        border.color: musicUrlApiKeyField.activeFocus ? Theme.primary : "transparent"
-                    }
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 220
+                Layout.preferredHeight: 220
+                visible: settingsModel && settingsModel.qqMusicQrSource.length > 0
+                color: "white"
+                radius: Theme.radiusMd
+                border.width: 1
+                border.color: Theme.border
+
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingSm
+                    source: settingsModel ? settingsModel.qqMusicQrSource : ""
+                    fillMode: Image.PreserveAspectFit
+                    cache: false
                 }
             }
 
             Text {
-                text: "搜索 API 使用酷我官方接口，直链 API 用于获取播放地址（需配合 API Key）"
+                Layout.fillWidth: true
+                visible: settingsModel && settingsModel.qqMusicQrSource.length > 0
+                text: "请使用所选客户端扫码，并在手机上确认。二维码 3 分钟后过期。"
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.fontSizeSm
+                color: Theme.textSecondary
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "未登录时可搜索并播放官方试听；登录后按账号版权和会员权限获取完整音源。凭据仅保存在本机配置中。"
+                wrapMode: Text.WordWrap
                 font.pixelSize: Theme.fontSizeXs
                 color: Theme.textPlaceholder
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
             }
         }
 
@@ -118,7 +111,6 @@ ScrollView {
             color: Theme.divider
         }
 
-        // 播放偏好
         ColumnLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
@@ -145,14 +137,15 @@ ScrollView {
                 XComboBox {
                     id: musicQualityCombo
                     Layout.preferredWidth: 150
-                    model: ["128k", "320k"]
+                    model: ["320k", "128k"]
+                    property var qualityValues: ["320k", "128k"]
                     currentIndex: {
                         var q = settingsModel ? settingsModel.musicDefaultQuality : "320k"
-                        var idx = ["128k", "320k"].indexOf(q)
-                        return idx >= 0 ? idx : 1
+                        var idx = qualityValues.indexOf(q)
+                        return idx >= 0 ? idx : 0
                     }
                     onActivated: function(index) {
-                        if (settingsModel) settingsModel.musicDefaultQuality = model[index]
+                        if (settingsModel) settingsModel.musicDefaultQuality = qualityValues[index]
                     }
                     font.pixelSize: Theme.fontSizeSm
                 }

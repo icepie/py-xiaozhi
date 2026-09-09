@@ -4,10 +4,8 @@ from src.logging import get_logger
 
 logger = get_logger()
 
-DEFAULT_SEARCH_URL = "http://search.kuwo.cn/r.s"
-DEFAULT_URL_API = "https://lxmusicapi.onrender.com"
-DEFAULT_URL_API_KEY = "share-v3"
-DEFAULT_LYRICS_URL = "http://m.kuwo.cn/newh5/singles/songinfoandlrc"
+DEFAULT_SOURCE = "tx"
+DEFAULT_QUALITY = "320k"
 
 
 def _cfg_str(cm, path: str, default: str) -> str:
@@ -26,13 +24,12 @@ def load_music_config() -> dict:
     pick = _cfg_str
 
     return {
-        "SEARCH_URL": pick(cm, "MUSIC.SEARCH_URL", DEFAULT_SEARCH_URL),
-        "URL_API": pick(cm, "MUSIC.URL_API", DEFAULT_URL_API),
-        "URL_API_KEY": pick(cm, "MUSIC.URL_API_KEY", DEFAULT_URL_API_KEY),
-        "LYRICS_URL": pick(cm, "MUSIC.LYRICS_URL", DEFAULT_LYRICS_URL),
-        "DEFAULT_SOURCE": pick(cm, "MUSIC.DEFAULT_PLATFORM", "kw") or "kw",
-        "DEFAULT_BR": pick(cm, "MUSIC.DEFAULT_QUALITY", "320k") or "320k",
+        "DEFAULT_SOURCE": pick(
+            cm, "MUSIC.DEFAULT_PLATFORM", DEFAULT_SOURCE
+        ).lower(),
+        "DEFAULT_BR": pick(cm, "MUSIC.DEFAULT_QUALITY", DEFAULT_QUALITY).lower(),
         "SEARCH_LIMIT": 20,
+        "QQ_CREDENTIAL": cm.get_config("MUSIC.QQ_CREDENTIAL", {}) or {},
         "HEADERS": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",

@@ -20,7 +20,7 @@ from .cache import MusicCache
 from .config import load_music_config
 from .download import MusicDownloader
 from .local_library import LocalLibrary
-from .lyrics import fetch_kuwo_lyrics, format_lyric_display, lyric_at
+from .lyrics import fetch_qq_lyrics, format_lyric_display, lyric_at
 from .online_search import search_song
 from .playback import PlaybackDeps, PlaybackEngine
 
@@ -106,9 +106,9 @@ class MusicPlayer:
         self._downloader.set_config(self._config)
         logger.debug(
             "MusicPlayer 配置已加载: "
-            f"搜索={self._config['SEARCH_URL']}, "
-            f"直链={self._config['URL_API']}, "
-            f"平台={self._config['DEFAULT_SOURCE']}"
+            f"平台={self._config['DEFAULT_SOURCE']}, "
+            f"音质={self._config['DEFAULT_BR']}, "
+            f"QQ登录={'是' if self._config['QQ_CREDENTIAL'] else '否'}"
         )
         return self._config
 
@@ -282,11 +282,7 @@ class MusicPlayer:
 
     async def _fetch_lyrics(self, song_id: str):
         eng = self._engine
-        self.lyrics = await fetch_kuwo_lyrics(
-            song_id,
-            lyrics_url=self.config["LYRICS_URL"],
-            headers=self.config["HEADERS"],
-        )
+        self.lyrics = await fetch_qq_lyrics(song_id, config=self.config)
         if eng.total_duration == 0 and self.lyrics:
             last_time, _ = self.lyrics[-1]
             eng.total_duration = last_time + 5.0

@@ -58,11 +58,11 @@ class ConfigManager:
     """
 
     # 当前 schema 版本；加载时 migrate_config() 会升到此版本
-    CONFIG_VERSION = 1
+    CONFIG_VERSION = 4
 
     # 默认配置（完整产品 schema；加载时 deepcopy，禁止与实例共享嵌套对象）
     DEFAULT_CONFIG = {
-        "CONFIG_VERSION": 1,
+        "CONFIG_VERSION": 4,
         "SYSTEM_OPTIONS": {
             "CLIENT_ID": None,
             "DEVICE_ID": None,
@@ -182,14 +182,11 @@ class ConfigManager:
                 "PIL": "WARNING",
             },
         },
-        # 音乐 API（空字符串=运行时用内置默认 URL）
+        # 音乐默认使用 QQMusicApi；凭据由设置页扫码登录写入
         "MUSIC": {
-            "SEARCH_URL": "",
-            "URL_API": "",
-            "URL_API_KEY": "",
-            "LYRICS_URL": "",
-            "DEFAULT_PLATFORM": "kw",
+            "DEFAULT_PLATFORM": "tx",
             "DEFAULT_QUALITY": "320k",
+            "QQ_CREDENTIAL": {},
         },
     }
 
@@ -325,7 +322,35 @@ class ConfigManager:
                 pass
             ver = 1
 
-        # 将来：if ver < 2: ...; ver = 2
+        if ver < 2:
+            music = config.setdefault("MUSIC", {})
+            if not isinstance(music, dict):
+                music = {}
+                config["MUSIC"] = music
+            # 旧版内置酷我/lx 配置由 QQMusicApi 完整替代。
+            music.pop("SEARCH_URL", None)
+            music.pop("URL_API", None)
+            music.pop("URL_API_KEY", None)
+            music.pop("LYRICS_URL", None)
+            if music.get("DEFAULT_PLATFORM") in (None, "", "kw"):
+                music["DEFAULT_PLATFORM"] = "tx"
+            music.setdefault("QQ_CREDENTIAL", {})
+            ver = 2
+
+        if ver < 3:
+            ver = 3
+
+        if ver < 4:
+            music = config.setdefault("MUSIC", {})
+            if not isinstance(music, dict):
+                music = {}
+                config["MUSIC"] = music
+            # QQMusicApi 的 FLAC 播放授权并非所有账号/歌曲都稳定可用。
+            if music.get("DEFAULT_QUALITY") in (None, "", "flac"):
+                music["DEFAULT_QUALITY"] = "320k"
+            ver = 4
+
+        # 将来：if ver < 5: ...; ver = 5
 
         if ver != original or config.get("CONFIG_VERSION") != self.CONFIG_VERSION:
             config["CONFIG_VERSION"] = self.CONFIG_VERSION

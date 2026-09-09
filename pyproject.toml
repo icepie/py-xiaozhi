@@ -56,6 +56,8 @@ dependencies = [
     # Linux 依赖 (GPIO 模式)
     "gpiozero>=2.0.1; sys_platform == 'linux'",
     "lgpio>=0.2.2.0; sys_platform == 'linux'",
+    "qqmusic-api-python>=0.7.2",
+    "typing-extensions>=4.16.0",
 ]
 
 [project.optional-dependencies]

@@ -1,28 +1,34 @@
-"""音乐下载：解析直链；后台 FFmpeg copy 预取到本地缓存."""
+"""QQ 音乐播放地址解析；后台 FFmpeg copy 预取到本地缓存."""
 
 from __future__ import annotations
 
 import asyncio
-import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from qqmusic_api import Client
+from qqmusic_api.modules.song import SongFileInfo, SongFileType, SpecialSongFileType
 
 from src.logging import get_logger
 from src.utils.resource_finder import get_ffmpeg_path
 
 from .cache import MusicCache
+from .online_search import credential_from_config
 
 logger = get_logger()
 
-# 直链搞不定时，走酷我官方试听
-_KUWO_PLAYURL = "https://wapi.kuwo.cn/api/v1/www/music/playUrl"
-_QUALITY_FALLBACKS = ("320k", "128k")
+_QQ_SCHEME = "qqmusic"
+_QUALITY_TYPES = {
+    "128k": SongFileType.MP3_128,
+    "320k": SongFileType.MP3_320,
+    "flac": SongFileType.FLAC,
+}
 
 _SUBPROCESS_KW = (
     {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
@@ -65,72 +71,75 @@ class MusicDownloader:
 
         return await self.download(api_url, name, song_id=song_id)
 
+
     @staticmethod
-    def _extract_url_from_payload(data: Any) -> str | None:
-        # 各家 JSON 字段不太一样，尽量抠出 url
-        if not isinstance(data, dict):
-            return None
+    def _parse_qq_descriptor(api_url: str) -> tuple[str, int, str]:
+        parsed = urlparse(api_url)
+        if parsed.scheme != _QQ_SCHEME or parsed.netloc != "song":
+            raise ValueError("无效的 QQ 音乐音源描述符")
+        song_mid = parsed.path.lstrip("/")
+        if not song_mid:
+            raise ValueError("QQ 音乐音源缺少歌曲 MID")
+        params = dict(
+            item.split("=", 1) if "=" in item else (item, "")
+            for item in parsed.query.split("&")
+            if item
+        )
+        try:
+            song_type = int(params.get("song_type") or 0)
+        except ValueError:
+            song_type = 0
+        return song_mid, song_type, params.get("media_mid", "")
 
-        real_url = data.get("url")
-        if isinstance(real_url, str) and real_url.startswith("http"):
-            return real_url
+    async def _resolve_via_qqmusic(self, api_url: str) -> str | None:
+        song_mid, song_type, media_mid = self._parse_qq_descriptor(api_url)
+        quality = str(self._config.get("DEFAULT_BR") or "320k").lower()
+        preferred = _QUALITY_TYPES.get(quality, SongFileType.MP3_320)
+        file_types = [preferred]
+        if preferred not in (SongFileType.MP3_320, SongFileType.MP3_128):
+            file_types.append(SongFileType.MP3_320)
+        if SongFileType.MP3_128 not in file_types:
+            file_types.append(SongFileType.MP3_128)
+        # 未登录或无版权时仍请求官方试听，绝不绕过平台权限。
+        file_types.append(SpecialSongFileType.TRY)
 
-        inner = data.get("data")
-        if isinstance(inner, dict):
-            nested = inner.get("url")
-            if isinstance(nested, str) and nested.startswith("http"):
-                return nested
-        elif isinstance(inner, str) and inner.startswith("http"):
-            return inner
+        credential = credential_from_config(self._config)
+        async with Client(credential=credential) as client:
+            dispatch = await client.song.get_cdn_dispatch()
+            if not dispatch.sip:
+                self.last_error = "QQ 音乐未返回可用 CDN"
+                return None
 
+            requests = [
+                SongFileInfo(
+                    mid=song_mid,
+                    file_type=file_type,
+                    song_type=song_type,
+                    media_mid=media_mid or None,
+                )
+                for file_type in file_types
+            ]
+            result = await client.song.get_song_urls(requests)
+
+        for info in result.data:
+            if info.result == 0 and info.purl:
+                cdn = next(
+                    (
+                        base
+                        for base in dispatch.sip
+                        if base.startswith("https://")
+                        and "stream.qqmusic.qq.com" in base
+                    ),
+                    "https://isure.stream.qqmusic.qq.com/",
+                )
+                media_url = f"{cdn}{info.purl}"
+                logger.info("QQ 音乐播放地址解析成功: %s", urlparse(media_url).hostname)
+                return media_url
+
+        codes = ", ".join(str(info.result) for info in result.data) or "无结果"
+        self.last_error = f"QQ 音乐无可播放音质（结果码: {codes}）"
         return None
 
-    @staticmethod
-    def _describe_api_failure(data: Any) -> str:
-        if not isinstance(data, dict):
-            return "直链 API 返回无法解析的数据"
-
-        code = data.get("code")
-        msg = str(data.get("msg") or data.get("message") or "").strip()
-
-        # lx-music-api 常见 code
-        if code == 1 or "禁止批量下载" in msg or "block ip" in msg.lower():
-            return (
-                "直链 API 已封禁当前 IP（禁止批量下载）。"
-                "可切换网络/IP，或在设置中更换 MUSIC.URL_API"
-            )
-        if code == 5 or "too many" in msg.lower():
-            return "直链 API 请求过于频繁，请稍后再试"
-        if code == 2:
-            return "直链 API 获取播放地址失败（曲库无源或解析失败）"
-        if code == 4:
-            return "直链 API 内部错误"
-        if code == 6:
-            return "直链 API 参数错误"
-
-        if msg:
-            return f"直链 API 失败: {msg}"
-        return f"直链 API 未能返回播放 URL: {data}"
-
-    def _lx_headers(self) -> dict[str, str]:
-        # 对齐 Huibq/keep-alive render_api.js：只认 Key + UA
-        return {
-            "X-Request-Key": self._config.get("URL_API_KEY", "share-v3"),
-            "User-Agent": "lx-music-request",
-            "Content-Type": "application/json",
-        }
-
-    def _browser_headers(self) -> dict[str, str]:
-        # 酷我官方 playUrl 用
-        headers = dict(self._config.get("HEADERS") or {})
-        headers.setdefault(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        )
-        headers.setdefault("Referer", "https://www.kuwo.cn/")
-        headers.setdefault("Accept", "application/json, text/plain, */*")
-        return headers
 
     def media_headers(self, media_url: str) -> dict[str, str]:
         """给 CDN / FFmpeg 流式播放用的请求头（不是 JSON API 那套）."""
@@ -145,142 +154,21 @@ class MusicDownloader:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Connection": "keep-alive",
         }
-        if "kuwo" in host or "sycdn" in host or "bd-lv" in host:
-            headers["Referer"] = "https://www.kuwo.cn/"
-            headers["Origin"] = "https://www.kuwo.cn"
+        if "qqmusic" in host or "gtimg" in host:
+            headers["Referer"] = "https://y.qq.com/"
         return headers
 
-    # 旧名
-    def _download_headers(self, download_url: str) -> dict[str, str]:
-        return self.media_headers(download_url)
-
-    async def _fetch_json(
-        self, url: str, headers: dict[str, str], *, timeout: int = 15
-    ) -> Any | None:
-        try:
-            response = await asyncio.to_thread(
-                requests.get, url, headers=headers, timeout=timeout
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.warning(
-                f"请求失败 {urlparse(url).netloc}: {e}", exc_info=True
-            )
-            return None
-
-    def _candidate_lx_urls(self, api_url: str) -> list[str]:
-        # 先按配置音质试，再试 128k
-        urls = [api_url]
-        m = re.search(r"/url/[^/]+/[^/]+/([^/?#]+)", api_url)
-        if not m:
-            return urls
-        current_quality = m.group(1)
-        for q in _QUALITY_FALLBACKS:
-            if q == current_quality:
-                continue
-            alt = re.sub(
-                r"(/url/[^/]+/[^/]+/)[^/?#]+",
-                rf"\g<1>{q}",
-                api_url,
-                count=1,
-            )
-            if alt not in urls:
-                urls.append(alt)
-        return urls
-
-    async def _resolve_via_lx_api(self, api_url: str) -> tuple[str | None, str | None]:
-        last_reason: str | None = None
-        headers = self._lx_headers()
-
-        for candidate in self._candidate_lx_urls(api_url):
-            logger.debug(f"尝试直链 API: {candidate}")
-            data = await self._fetch_json(candidate, headers)
-            if data is None:
-                last_reason = "直链 API 网络请求失败"
-                continue
-
-            real_url = self._extract_url_from_payload(data)
-            if real_url:
-                logger.info(f"直链 API 解析成功: {real_url[:80]}...")
-                return real_url, None
-
-            last_reason = self._describe_api_failure(data)
-            logger.warning(f"直链 API 未返回 URL: {data}")
-
-            # IP 被封了换音质也没用
-            if "封禁" in (last_reason or "") or "禁止批量下载" in str(data):
-                break
-
-        return None, last_reason
-
-    async def _resolve_via_kuwo_official(
-        self, song_id: str
-    ) -> tuple[str | None, str | None]:
-        # 免费歌能听；付费歌官方会直接说不行
-        if not song_id or song_id == "unknown":
-            return None, "缺少歌曲 ID，无法回退官方接口"
-
-        headers = self._browser_headers()
-        last_reason: str | None = None
-
-        for br in ("320kmp3", "128kmp3"):
-            url = f"{_KUWO_PLAYURL}?mid={song_id}&type=music&httpsStatus=1&br={br}"
-            logger.debug(f"尝试酷我官方 playUrl: mid={song_id} br={br}")
-            data = await self._fetch_json(url, headers)
-            if data is None:
-                last_reason = "酷我官方接口网络请求失败"
-                continue
-
-            real_url = self._extract_url_from_payload(data)
-            if real_url:
-                logger.info(f"酷我官方接口解析成功: {real_url[:80]}...")
-                return real_url, None
-
-            msg = ""
-            if isinstance(data, dict):
-                msg = str(data.get("msg") or data.get("message") or "").strip()
-            if "付费" in msg:
-                last_reason = f"该歌曲为付费内容，官方接口无法试听（{msg}）"
-                break
-            last_reason = msg or f"酷我官方接口未返回 URL: {data}"
-            logger.warning(last_reason)
-
-        return None, last_reason
 
     async def resolve_play_url(
         self, api_url: str, *, song_id: str | None = None
     ) -> str | None:
-        # 直链 → 降音质 → 官方接口
+        """把内部 QQ 音源描述符解析为有时效的官方 CDN 地址."""
+        _ = song_id
         self.last_error = None
-        reasons: list[str] = []
-
         try:
-            real_url, reason = await self._resolve_via_lx_api(api_url)
-            if real_url:
-                return real_url
-            if reason:
-                reasons.append(reason)
-
-            # 没传 song_id 时从 url 路径里抠
-            sid = song_id
-            if not sid or sid == "unknown":
-                m = re.search(r"/url/[^/]+/([^/]+)/", api_url)
-                if m:
-                    sid = m.group(1)
-
-            if sid:
-                real_url, reason = await self._resolve_via_kuwo_official(sid)
-                if real_url:
-                    return real_url
-                if reason:
-                    reasons.append(reason)
-
-            self.last_error = "；".join(reasons) if reasons else "未能解析播放地址"
-            logger.error(f"未能解析播放 URL: {self.last_error}")
-            return None
+            return await self._resolve_via_qqmusic(api_url)
         except Exception as e:
-            self.last_error = f"解析播放 URL 异常: {e}"
+            self.last_error = f"解析 QQ 音乐播放地址失败: {e}"
             logger.error(self.last_error, exc_info=True)
             return None
 
@@ -306,7 +194,7 @@ class MusicDownloader:
                             if chunk:
                                 f.write(chunk)
                 if temp_path.stat().st_size <= 0:
-                    raise IOError("下载文件为空")
+                    raise OSError("下载文件为空")
                 shutil.move(str(temp_path), str(cache_path))
                 return cache_path
             except (requests.RequestException, OSError) as e:
